@@ -177,6 +177,11 @@ codeunit 51519001 WMSIntegrations
         TimePart: Text;
         DateComponent: Date;
         TimeComponent: Time;
+        ProductionJnlMgt: Codeunit "Production Journal Mgt";
+        CalcProdOrder: Codeunit "Calculate Prod. Order";
+        CreateOrderLine: Codeunit "Create Prod. Order Lines";
+        ProductionOrderLine: Record "Prod. Order Line";
+
 
     begin
 
@@ -205,6 +210,9 @@ codeunit 51519001 WMSIntegrations
         ProdOrderRec.Insert(true);
         ProdOrderRec."Description 2" := ProductionOrderNo;
         ProdOrderRec.Modify(true);
+
+        CreateOrderLine.Copy(ProdOrderRec, 1, '', false);
+
         // Report.Run(Report::"Refresh Production Order", false, true, ProdOrderRec);
         //Message('Production Order %1 created successfully.', ProductionOrderNo);
         exit(true);
@@ -241,6 +249,7 @@ codeunit 51519001 WMSIntegrations
     procedure CreateProductionJournalLine(ProductionOrderNo: Text; ProductionLine: JsonObject; Output: Boolean)
     var
         ProdJournalRec: Record "Item Journal Line"; // Assume this is the table for journal lines
+        ProdJournalRec2: Record "Item Journal Line"; // Assume this is the table for journal lines
         VariantValue: Variant; // Intermediate Variant variable for GetValue
         ItemNo, UOM, LocationCode, Bin, User, DateTimeStr : Text;
         Quantity: Decimal;
@@ -350,7 +359,8 @@ codeunit 51519001 WMSIntegrations
         ProdJournalRec.Validate("Location Code", LocationCode);
         ProdJournalRec.Validate("Bin Code", Bin);
         // ProdJournalRec."User ID" := User;
-
+        if ProdJournalRec2.Get(ProdJournalRec."Journal Template Name", ProdJournalRec."Journal Batch Name", ProdJournalRec."Line No.") then
+            ProdJournalRec2.Delete(true);
         ProdJournalRec.Insert(true);
 
         Message('Production Journal Line for Item %1 added to Order %2.', ItemNo, ProductionOrderNo);
