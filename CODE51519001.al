@@ -8,7 +8,8 @@ codeunit 51519001 WMSIntegrations
             1. Make a get call to fetch production order from API   
             2. Create a production order in Business Central 
         */
-        getProductionOrderFromAPI();
+        // getProductionOrderFromAPI();
+        ProcessProductionOrders(getProductionOrderFromAPI())
     end;
 
     var
@@ -19,18 +20,30 @@ codeunit 51519001 WMSIntegrations
         HttpResponseMessage: HttpResponseMessage;
         ResponseText: Text;
         APIUrl: Text;
+        IntegrationSetupRec: Record "Integration Setup";
+        EndpointUrl: Text;
         APIBaseUrl: Text;
     begin
-        APIBaseUrl := 'http://100.100.2.39:3000/';
-        APIUrl := APIBaseUrl + 'fetch-production-orders'; // Replace with your API URL
+        // Retrieve settings from the Integration Setup table
+        if not IntegrationSetupRec.Get('fetch-production-orders') then // Use the appropriate "Code" for Production Order API setup
+            Error('Integration setup for Production Order API not found.');
 
+        // Construct the API URL using values from the Integration Setup table
 
+        APIBaseUrl := IntegrationSetupRec."APIBaseUrl";
+        EndpointUrl := IntegrationSetupRec."EndpointUrl";
+        APIUrl := StrSubstNo('%1%2', APIBaseUrl, EndpointUrl);
+        // APIUrl := IntegrationSetupRec."APIBaseUrl" + IntegrationSetupRec."EndpointUrl";
+
+        // Check if Method Type is GET
+        if IntegrationSetupRec."MethodType" <> IntegrationSetupRec."MethodType"::GET then
+            Error('Unsupported HTTP Method Type for fetching production orders.');
+
+        // Make the HTTP GET request
         if HttpClient.Get(APIUrl, HttpResponseMessage) then begin
             if HttpResponseMessage.IsSuccessStatusCode() then begin
                 HttpResponseMessage.Content().ReadAs(ResponseText);
-                // Process the response text
-                // Message(ResponseText);
-                exit(ResponseText);
+                exit(ResponseText); // Return the response text
             end else begin
                 Error('Failed to fetch production order. Status Code: %1', HttpResponseMessage.HttpStatusCode());
             end;
@@ -129,19 +142,20 @@ codeunit 51519001 WMSIntegrations
 
                     // Create the production order
                     if CreateProductionOrder(ProductionOrderNo, ItemNo, Quantity, UOM, LocationCode, Bin, User, RoutingCode, DateTimeStr) then begin
-                        // Retrieve ProductionJournalLines array and process each line
                         if ProductionOrder.Get('ProductionJournalLines', JsonToken) then begin
                             if JsonToken.IsArray() then begin
                                 ProductionJournalLinesArray := JsonToken.AsArray();
                                 foreach JsonToken in ProductionJournalLinesArray do begin
                                     if JsonToken.IsObject() then begin
                                         ProductionLine := JsonToken.AsObject();
-                                        CreateProductionJournalLine(ProductionOrderNo, ProductionLine, false);
+                                        CreateProductionJournalLine(ProductionOrderNo, ProductionLine);
                                     end;
                                 end;
                             end;
                         end;
+                        //post production journal batch
 
+                        PostProductionJournalBatchWithErrorHandling(ProductionOrderNo)
                         // Create routing and component lines for the production order
                         // CreateRoutingAndComponents(ProductionOrderNo, RoutingCode, ItemNo);
                     end;
@@ -151,6 +165,23 @@ codeunit 51519001 WMSIntegrations
         else
             Error('Failed to parse JSON response.');
     end;
+
+
+    procedure resolveProductionOrder(ProductionOrderNo: Text): Text
+    var
+        ProdOrderRec: Record "Production Order";
+    begin
+
+        ProdOrderRec.SetRange("Description 2", ProductionOrderNo);
+
+        if ProdOrderRec.FindFirst() then
+            exit(ProdOrderRec."No.")
+        else
+            Error('Production Order %1 not found.', ProductionOrderNo);
+
+    end;
+
+
 
 
     local procedure EvaluateDate(DateStr: Text): Date
@@ -181,6 +212,7 @@ codeunit 51519001 WMSIntegrations
         CalcProdOrder: Codeunit "Calculate Prod. Order";
         CreateOrderLine: Codeunit "Create Prod. Order Lines";
         ProductionOrderLine: Record "Prod. Order Line";
+        ProductionOrderRec2: Record "Production Order";
 
 
     begin
@@ -202,23 +234,23 @@ codeunit 51519001 WMSIntegrations
         ProdOrderRec."Starting Time" := EvaluateTime(TimePart);
         ProdOrderRec."Due Date" := EvaluateDate(DatePart);
         ProdOrderRec."Starting Date" := EvaluateDate(DatePart);
+        ProdOrderRec."Ending Date" := EvaluateDate(DatePart);
 
-        // ProdOrderRec."Starting Time" := Time;
+        ProductionOrderRec2.Reset();
+        ProductionOrderRec2.SetRange("Description 2", ProductionOrderNo);
+        //only inset if the production order does not exist
+        if not ProductionOrderRec2.FindFirst() then begin
+            ProdOrderRec.Insert(true);
+            ProdOrderRec."Description 2" := ProductionOrderNo;
+            ProdOrderRec.Modify(true);
+            CreateOrderLine.Copy(ProdOrderRec, 1, '', false);
+        end;
 
-        // ProdOrderRec."Due Date" := Today;
-        // ProdOrderRec."Starting Date" := Today;
-        ProdOrderRec.Insert(true);
-        ProdOrderRec."Description 2" := ProductionOrderNo;
-        ProdOrderRec.Modify(true);
-
-        CreateOrderLine.Copy(ProdOrderRec, 1, '', false);
-
-        // Report.Run(Report::"Refresh Production Order", false, true, ProdOrderRec);
-        //Message('Production Order %1 created successfully.', ProductionOrderNo);
+        //Message('Production Order %1 created successfully.', ProdOrderRec."No.");
         exit(true);
     end;
 
-    procedure resolveProductionOrder(ProductionOrderNo: Text): Text
+    procedure resolveProductionOrderNo(ProductionOrderNo: Text): Text
 
     var
         ProdOrderRec: Record "Production Order";
@@ -232,12 +264,28 @@ codeunit 51519001 WMSIntegrations
 
     end;
 
+    procedure resolveProductionSourceNo(ProductionOrderNo: Text): Text
+
+    var
+        ProdOrderRec: Record "Production Order";
+    begin
+        ProdOrderRec.SetRange("Description 2", ProductionOrderNo);
+
+        if ProdOrderRec.FindFirst() then
+            exit(ProdOrderRec."Source No.")
+        else
+            Error('Production Order %1 not found.', ProductionOrderNo);
+
+    end;
+
+
+
     local procedure resolveOrderLineNo(ProductionOrderNo: Text; ItemNo: Text): Integer
     var
         ProdOrderRec: Record "Prod. Order Line";
     begin
-        ProdOrderRec.SetRange("Prod. Order No.", ProductionOrderNo);
-        ProdOrderRec.SetRange("Item No.", ItemNo);
+        ProdOrderRec.SetRange("Description 2", ProductionOrderNo);
+        // ProdOrderRec.SetRange("Item No.", ItemNo);
         if ProdOrderRec.FindFirst() then
             exit(ProdOrderRec."Line No.")
         else
@@ -245,31 +293,194 @@ codeunit 51519001 WMSIntegrations
     end;
 
 
-
-    procedure CreateProductionJournalLine(ProductionOrderNo: Text; ProductionLine: JsonObject; Output: Boolean)
+    procedure PostProductionJournalBatchWithErrorHandling(ProductionOrderNo: Text): Boolean
     var
-        ProdJournalRec: Record "Item Journal Line"; // Assume this is the table for journal lines
-        ProdJournalRec2: Record "Item Journal Line"; // Assume this is the table for journal lines
-        VariantValue: Variant; // Intermediate Variant variable for GetValue
+        ItemJournalLine: Record "Item Journal Line";
+        Success: Boolean;
+        ErrorMessage: Text;
+    begin
+        // Reset and filter for journal lines related to the production order
+        ItemJournalLine.Reset();
+        ItemJournalLine.SetRange("Document No.", resolveProductionOrder(ProductionOrderNo));
+
+        if ItemJournalLine.FindSet() then begin
+            // Check for sufficient quantity in the consumption location before posting
+            repeat
+                // if ItemJournalLine."Entry Type" = ItemJournalLine."Entry Type"::Output then
+                //     Message(Format(ItemJournalLine.Quantity));
+
+                if ItemJournalLine."Entry Type" = ItemJournalLine."Entry Type"::Consumption then begin
+                    if not CheckSufficientQuantity(ItemJournalLine."Item No.", ItemJournalLine."Location Code", ItemJournalLine.Quantity) then begin
+                        ErrorMessage := StrSubstNo('Insufficient quantity in location %1 for item %2. Required: %3',
+                                                   ItemJournalLine."Location Code", ItemJournalLine."Item No.",
+                                                   Format(ItemJournalLine.Quantity));
+                        SendErrorToExternalAPI(ErrorMessage, ProductionOrderNo);
+                        exit(false);
+                    end;
+                end;
+            until ItemJournalLine.Next() = 0;
+
+            // Try posting the journal batch after validation
+            TryPostJournalBatch(ItemJournalLine, Success);
+        end else
+            // Error('No journal lines found for Production Order %1.', ProductionOrderNo);
+            exit(false);
+        if Success then
+            exit(true)
+        // Message('Production Order %1 journal batch posted successfully.', ProductionOrderNo)
+        else begin
+            ErrorMessage := GetLastErrorText();
+            SendErrorToExternalAPI(ErrorMessage, ProductionOrderNo);
+            exit(false);
+            // Error('Failed to post journal batch for Production Order %1. Error: %2', ProductionOrderNo, ErrorMessage);
+        end;
+    end;
+
+    // [TryFunction]
+    local procedure TryPostJournalBatch(var ItemJournalLine: Record "Item Journal Line"; var Success: Boolean)
+    var
+        ItemJnlPostLine: Codeunit "Item Jnl.-Post Line";
+    begin
+        // Attempt to post each item journal line individually
+        ItemJnlPostLine.Run(ItemJournalLine);
+        Success := true; // Set success to true if posting succeeds
+    end;
+
+    procedure CheckSufficientQuantity(ItemNo: Text; LocationCode: Text; RequiredQuantity: Decimal): Boolean
+    var
+        ItemLedgerEntry: Record "Item Ledger Entry";
+        AvailableQuantity: Decimal;
+    begin
+        ItemLedgerEntry.SetRange("Item No.", ItemNo);
+        ItemLedgerEntry.SetRange("Location Code", LocationCode);
+
+        // Calculate the total available quantity at the location for the item
+        if ItemLedgerEntry.CalcSums("Remaining Quantity") then
+            AvailableQuantity := ItemLedgerEntry."Remaining Quantity"
+        else
+            AvailableQuantity := 0;
+
+        // Return true if the available quantity is sufficient; otherwise, return false
+        exit(AvailableQuantity >= RequiredQuantity);
+    end;
+
+
+    procedure SendErrorToExternalAPI(ErrorMessage: Text; OrderNo: Text)
+    var
+        HttpClient: HttpClient;
+        HttpRequestMessage: HttpRequestMessage;
+        HttpResponseMessage: HttpResponseMessage;
+        Content: HttpContent;
+        ContentHeaders: HttpHeaders;
+        JsonObject: JsonObject;
+        TextContent: Text;
+        ResponseText: Text;
+        IntegrationSetupRec: Record "Integration Setup";
+        HttpMethod: Enum "HttpMethodType";
+        APIBaseUrl: Text;
+        ApiEndpoint: Text;
+        APIUrl: Text;
+        EndpointUrl: Text;
+
+    begin
+        // Construct JSON payload
+        iF not (IntegrationSetupRec.Get('production-order-error')) then
+            Error('Integration setup record not found for production error handling.');
+        JsonObject.Add('errorMessage', ErrorMessage);
+        JsonObject.Add('orderNo', OrderNo);
+        JsonObject.Add('queue', IntegrationSetupRec."ErrorQueue");
+        JsonObject.Add('routingKey', IntegrationSetupRec."RoutingKey");
+        JsonObject.Add('timestamp', Format(CurrentDateTime, 0, 9));
+        JsonObject.WriteTo(TextContent);
+
+        // Prepare HttpContent with JSON payload
+
+        Content.WriteFrom(TextContent);
+        Content.GetHeaders(ContentHeaders);
+        ContentHeaders.Clear();
+        ContentHeaders.Add('Content-Type', Format(IntegrationSetupRec."ContentType"));
+
+        // Set up the HttpRequestMessage
+        APIBaseUrl := IntegrationSetupRec."APIBaseUrl";
+        EndpointUrl := IntegrationSetupRec."EndpointUrl";
+        APIUrl := StrSubstNo('%1%2', APIBaseUrl, EndpointUrl);
+        HttpRequestMessage.Method := Format(IntegrationSetupRec."MethodType"::POST);
+        HttpRequestMessage.SetRequestUri(APIUrl);
+        HttpRequestMessage.Content := Content;
+
+        // Send the request
+        if HttpClient.Send(HttpRequestMessage, HttpResponseMessage) then begin
+            if HttpResponseMessage.IsSuccessStatusCode() then begin
+                HttpResponseMessage.Content().ReadAs(ResponseText);
+                Message('Response from external API: %1', ResponseText);
+            end else begin
+                Message('Request failed with status code: %1', HttpResponseMessage.HttpStatusCode());
+            end;
+        end else begin
+            Message('Failed to send request to external API.');
+        end;
+    end;
+
+
+    procedure InitializeJournalTemplateAndBatch()
+    var
+        JournalTemplateRec: Record "Item Journal Template";
+        JournalBatchRec: Record "Item Journal Batch";
+    begin
+        if not JournalTemplateRec.Get('OUTPUT') then begin
+            JournalTemplateRec."Name" := 'OUTPUT';
+            JournalTemplateRec."Type" := JournalTemplateRec."Type"::Output;
+            JournalTemplateRec."Description" := 'Output Journal Template';
+            JournalTemplateRec.Insert(true);
+        end;
+
+        if not JournalTemplateRec.Get('CONSUMP') then begin
+            JournalTemplateRec."Name" := 'CONSUMP';
+            JournalTemplateRec."Type" := JournalTemplateRec."Type"::Consumption;
+            JournalTemplateRec."Description" := 'Consumption Journal Template';
+            JournalTemplateRec.Insert(true);
+        end;
+
+        if not JournalBatchRec.Get('OUTPUT', 'OUTPUT') then begin
+            JournalBatchRec."Name" := 'OUTPUT';
+            JournalBatchRec."Journal Template Name" := 'OUTPUT';
+            JournalBatchRec."Template Type" := JournalBatchRec."Template Type"::Output;
+            JournalBatchRec."Description" := 'Output Journal Batch';
+            JournalBatchRec.Insert(true);
+        end;
+
+        if not JournalBatchRec.Get('CONSUMP', 'CONSUMP') then begin
+            JournalBatchRec."Name" := 'CONSUMP';
+            JournalBatchRec."Journal Template Name" := 'CONSUMP';
+            JournalBatchRec."Template Type" := JournalBatchRec."Template Type"::Consumption;
+            JournalBatchRec."Description" := 'Production Journal Batch';
+            JournalBatchRec.Insert(true);
+        end;
+    end;
+
+    procedure CreateProductionJournalLine(ProductionOrderNo: Text; ProductionLine: JsonObject)
+    var
+        ProdJournalRec: Record "Item Journal Line";
+        ProdJournalRec2: Record "Item Journal Line";
+        VariantValue: Variant;
         ItemNo, UOM, LocationCode, Bin, User, DateTimeStr : Text;
-        Quantity: Decimal;
+        Qty: Decimal;
         LineNo: Integer;
         ProdOrderRec: Record "Production Order";
         Itemrec: Record Item;
-        JournalBatchRec: Record "Item Journal Batch";
-        JournalTemplateRec: Record "Item Journal Template";
         OrderLineNo: Integer;
+        EntryType: Text;
+        ILE: Record "Item Ledger Entry";
     begin
+        InitializeJournalTemplateAndBatch();
 
         ProdOrderRec.SetRange("Description 2", ProductionOrderNo);
-        // Use GetValue to retrieve each property from the JSON object
+
         GetValue(ProductionLine, 'ItemNo', VariantValue);
         ItemNo := VariantValue;
 
-
-
         GetValue(ProductionLine, 'Quantity', VariantValue);
-        Quantity := VariantValue;
+        Qty := VariantValue;
 
         GetValue(ProductionLine, 'uom', VariantValue);
         UOM := VariantValue;
@@ -289,110 +500,70 @@ codeunit 51519001 WMSIntegrations
         GetValue(ProductionLine, 'date_time', VariantValue);
         DateTimeStr := VariantValue;
 
+        GetValue(ProductionLine, 'type', VariantValue);
+        EntryType := VariantValue;
 
-        // Initialize and populate the production journal line record
         ProdJournalRec.Init();
-
-        if not (JournalTemplateRec.Get('OUTPUT')) then begin
-            JournalTemplateRec."Name" := 'OUTPUT';
-            JournalTemplateRec."Type" := JournalTemplateRec."Type"::Output;
-            JournalTemplateRec."Description" := 'Output Journal Template';
-            JournalTemplateRec.Insert(true);
-        end;
-
-        if not (JournalTemplateRec.Get('CONSUMP')) then begin
-            JournalTemplateRec."Name" := 'CONSUMP';
-            JournalTemplateRec."Type" := JournalTemplateRec."Type"::Consumption;
-            JournalTemplateRec."Description" := 'Consumption Journal Template';
-            JournalTemplateRec.Insert(true);
-        end;
-
-        if not (JournalBatchRec.Get('OUTPUT', 'OUTPUT')) then begin
-            JournalBatchRec."Name" := 'OUTPUT';
-            JournalBatchRec."Journal Template Name" := 'OUTPUT';
-            JournalBatchRec."Template Type" := JournalBatchRec."Template Type"::Output;
-            JournalBatchRec."Description" := 'Output Journal Batch';
-            JournalBatchRec.Insert(true);
-        end;
-
-        if not (JournalBatchRec.Get('CONSUMP', 'CONSUMP')) then begin
-            JournalBatchRec."Name" := 'CONSUMP';
-            JournalBatchRec."Journal Template Name" := 'CONSUMP';
-            JournalBatchRec."Template Type" := JournalBatchRec."Template Type"::Consumption;
-            JournalBatchRec."Description" := 'Production Journal Batch';
-            JournalBatchRec.Insert(true);
-        end;
-
-
-
-
-        ProdJournalRec."Document No." := ProductionOrderNo;
+        ProdJournalRec."External Document No." := ProductionOrderNo + '-' + Format(LineNo);
         ProdJournalRec.Validate("Item No.", ItemNo);
         ProdJournalRec.Validate("Posting Date", Today);
+        ProdJournalRec.Validate("Source Code", 'PRODORDER');
+        ProdJournalRec.Validate("Source No.", resolveProductionSourceNo(ProductionOrderNo));
+        ProdJournalRec.Validate("Document No.", resolveProductionOrderNo(ProductionOrderNo));
 
-        if Itemrec.Get(ItemNo) then
+        if Itemrec.Get(ItemNo) then begin
             ProdOrderRec.Validate("Gen. Prod. Posting Group", Itemrec."Gen. Prod. Posting Group");
+        end;
+
         ProdJournalRec."Document Type" := ProdJournalRec."Document Type"::" ";
-        if (Output) then begin
+
+        if EntryType = 'output' then begin
             ProdJournalRec."Entry Type" := ProdJournalRec."Entry Type"::Output;
             ProdJournalRec.Validate("Journal Template Name", 'OUTPUT');
             ProdJournalRec.Validate("Journal Batch Name", 'OUTPUT');
-        end
-        else begin
+        end else begin
             ProdJournalRec."Entry Type" := ProdJournalRec."Entry Type"::Consumption;
             ProdJournalRec.Validate("Journal Template Name", 'CONSUMP');
             ProdJournalRec.Validate("Journal Batch Name", 'CONSUMP');
         end;
+
         ProdJournalRec.Validate("Order Type", ProdJournalRec."Order Type"::Production);
 
-
         OrderLineNo := resolveOrderLineNo(ProductionOrderNo, ItemNo);
-        if (OrderLineNo <> 0) then begin
+        if OrderLineNo <> 0 then begin
             ProdJournalRec.Validate("Order No.", resolveProductionOrder(ProductionOrderNo));
-            ProdJournalRec.Validate("Order Line No.", resolveOrderLineNo(ProductionOrderNo, ItemNo));
+            ProdJournalRec.Validate("Order Line No.", OrderLineNo);
         end;
 
-
         ProdJournalRec.Validate("Unit of Measure Code", UOM);
-        ProdJournalRec.Validate(Quantity, Quantity);
+        ProdJournalRec.Validate(Quantity, Qty);
         ProdJournalRec.Validate("Line No.", LineNo);
         ProdJournalRec.Validate("Location Code", LocationCode);
         ProdJournalRec.Validate("Bin Code", Bin);
-        // ProdJournalRec."User ID" := User;
-        if ProdJournalRec2.Get(ProdJournalRec."Journal Template Name", ProdJournalRec."Journal Batch Name", ProdJournalRec."Line No.") then
+
+        if ProdJournalRec2.Get(ProdJournalRec."Journal Template Name", ProdJournalRec."Journal Batch Name", ProdJournalRec."Line No.") then begin
             ProdJournalRec2.Delete(true);
-        ProdJournalRec.Insert(true);
+        end;
 
-        Message('Production Journal Line for Item %1 added to Order %2.', ItemNo, ProductionOrderNo);
+        //only insert if the production journal line does not exist
+        ILE.SetRange("Item No.", ItemNo);
+        ILE.SetRange("Location Code", LocationCode);
+        ILE.SetRange("External Document No.", ProductionOrderNo + '-' + Format(LineNo));
+        ILE.SetRange("Source No.", resolveProductionOrderNo(ProductionOrderNo));
+        ILE.SetRange("Document No.", resolveProductionOrderNo(ProductionOrderNo));
+        if not ILE.FindFirst() then begin
+            ProdJournalRec.Insert(true);
+        end;
+
+
+        if (EntryType = 'output') then begin
+            ProdJournalRec.Validate(Quantity, Qty);
+            ProdJournalRec.Modify(true);
+        end;
+
+        // Message('Production Journal Line for Item %1 with qty: %3 added to Order %2.', ItemNo, resolveProductionOrder(ProductionOrderNo), Format(Qty));
     end;
-
-    // procedure CreateRoutingAndComponents(ProductionOrderNo: Text; RoutingCode: Text; ItemNo: Text)
-    // var
-    //     RoutingRec: Record "Routing Line"; // Assume this is the routing line table
-    //     ProdComponentRec: Record "BOM Component"; // Assume this is the production BOM component table
-    //     RoutingLineNo: Integer;
-    //     ComponentItemNo: Text;
-    //     ComponentQuantity: Decimal;
-    // begin
-    //     // Create routing lines
-    //     RoutingRec.SetRange("No." , RoutingCode);
-    //     if RoutingRec.FindSet() then begin
-    //         repeat
-    //             RoutingLineNo := RoutingRec."Line No.";
-    //             // Add routing lines to the production order
-    //             Message('Routing Line %1 with Operation %2 added to Production Order %3', RoutingLineNo, RoutingRec."Operation No.", ProductionOrderNo);
-    //         until RoutingRec.Next() = 0;
-    //     end;
-
-    //     // Create component lines (BOM components)
-    //     ProdComponentRec.SetRange("Parent Item No.", ItemNo);
-    //     if ProdComponentRec.FindSet() then begin
-    //         repeat
-    //             ComponentItemNo := ProdComponentRec."Component Item No.";
-    //             ComponentQuantity := ProdComponentRec.Quantity;
-    //             // Add component to the production order
-    //             Message('Component %1 with Quantity %2 added to Production Order %3', ComponentItemNo, ComponentQuantity, ProductionOrderNo);
-    //         until ProdComponentRec.Next() = 0;
-    //     end;
-    // end;
 }
+
+
+
